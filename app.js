@@ -1,13 +1,36 @@
 const express = require("express");
+const cors = require("cors");
 const app = express();
 const puppeteer = require("puppeteer");
 const fs = require("fs");
 const http = require("http").Server(app);
 const io = require("socket.io")(http);
-const moment = require("moment");
 const nodemailer = require("nodemailer");
+const redis = require("redis");
+const axios = require("axios");
+const responseTime = require("response-time");
+const moment = require("moment");
+const { promisify } = require("util");
 const { PDFDocument, rgb } = require("pdf-lib");
 require("dotenv").config({ path: ".env" });
+
+const client = redis.createClient({
+  host: "localhost",
+  port: 6379,
+});
+
+client.connect();
+
+client.on("connect", () => {
+  console.log("Connected to Redis...");
+});
+
+client.on("error", (err) => {
+  console.error("Error connecting to Redis:", err);
+});
+
+const GET_ASYNC = promisify(client.get).bind(client);
+const SET_ASYNC = promisify(client.set).bind(client);
 
 const TARGET_URL = "https://prosperidadsocial.gov.co/noticias/";
 
@@ -23,6 +46,9 @@ const BALANCER_PORT = process.env.BALANCER_PORT;
 const queue = [];
 let isProcessingQueue = false;
 
+app.use(cors());
+app.use(responseTime());
+
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST");
@@ -30,17 +56,47 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get("/popular-queries", async (req, res) => {
+  client
+    .set("clave", "valor2")
+    .then((reply) => {const logMessage = `${moment().format(
+      "YYYY-MM-DD HH:mm:ss"
+    )} Valor obtenido de Redis: ${reply}`;
+    console.log(logMessage);
+    io.emit("newLog", logMessage);} )
+    .catch((err) =>
+      console.error("Error al establecer el valor en Redis:", err)
+    );
+
+  client
+    .get("clave")
+    .then((reply) => {
+      const logMessage = `${moment().format(
+        "YYYY-MM-DD HH:mm:ss"
+      )} Valor obtenido de Redis: ${reply}`;
+      console.log(logMessage);
+      io.emit("newLog", logMessage);
+    })
+    .catch((err) => console.error("Error al obtener el valor de Redis:", err));
+});
+
 async function scrapeProsperidadSocial(keyword) {
-  const logMessage = `${moment().format("YYYY-MM-DD HH:mm:ss")} Launching browser...`;
+  const logMessage = `${moment().format(
+    "YYYY-MM-DD HH:mm:ss"
+  )} Launching browser...`;
   console.log(logMessage);
   io.emit("newLog", logMessage);
   const browser = await puppeteer.launch({ headless: true });
-  const logMessage2 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Browser launched`;
+  const logMessage2 = `${moment().format(
+    "YYYY-MM-DD HH:mm:ss"
+  )} Browser launched`;
   console.log(logMessage2);
   io.emit("newLog", logMessage2);
 
   const page = await browser.newPage();
-  const logMessage3 = `${moment().format("YYYY-MM-DD HH:mm:ss")} New page created`;
+  const logMessage3 = `${moment().format(
+    "YYYY-MM-DD HH:mm:ss"
+  )} New page created`;
   console.log(logMessage3);
   io.emit("newLog", logMessage3);
 
@@ -48,13 +104,17 @@ async function scrapeProsperidadSocial(keyword) {
   let nextPage = TARGET_URL;
 
   while (nextPage) {
-    const logMessage4 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Navigating to ${nextPage}`;
+    const logMessage4 = `${moment().format(
+      "YYYY-MM-DD HH:mm:ss"
+    )} Navigating to ${nextPage}`;
     console.log(logMessage4);
     io.emit("newLog", logMessage4);
 
     await page.goto(nextPage, { waitUntil: "networkidle2" });
 
-    const logMessage5 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Navigation to ${nextPage} completed`;
+    const logMessage5 = `${moment().format(
+      "YYYY-MM-DD HH:mm:ss"
+    )} Navigation to ${nextPage} completed`;
     console.log(logMessage5);
     io.emit("newLog", logMessage5);
 
@@ -67,7 +127,9 @@ async function scrapeProsperidadSocial(keyword) {
       return titles;
     });
 
-    const logMessage6 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Found ${titlesOnPage.length} titles on page`;
+    const logMessage6 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Found ${
+      titlesOnPage.length
+    } titles on page`;
     console.log(logMessage6);
     io.emit("newLog", logMessage6);
 
@@ -81,17 +143,23 @@ async function scrapeProsperidadSocial(keyword) {
       return nextButton ? nextButton.href : null;
     });
 
-    const logMessage7 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Next page: ${nextPage}`;
+    const logMessage7 = `${moment().format(
+      "YYYY-MM-DD HH:mm:ss"
+    )} Next page: ${nextPage}`;
     console.log(logMessage7);
     io.emit("newLog", logMessage7);
   }
 
-  const logMessage8 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Closing browser...`;
+  const logMessage8 = `${moment().format(
+    "YYYY-MM-DD HH:mm:ss"
+  )} Closing browser...`;
   console.log(logMessage8);
   io.emit("newLog", logMessage8);
   await browser.close();
 
-  const logMessage9 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Browser closed`;
+  const logMessage9 = `${moment().format(
+    "YYYY-MM-DD HH:mm:ss"
+  )} Browser closed`;
   console.log(logMessage9);
   io.emit("newLog", logMessage9);
 
@@ -99,7 +167,9 @@ async function scrapeProsperidadSocial(keyword) {
 }
 
 async function createPdf(titles, email) {
-  const logMessage = `${moment().format("YYYY-MM-DD HH:mm:ss")} Creating PDF...`;
+  const logMessage = `${moment().format(
+    "YYYY-MM-DD HH:mm:ss"
+  )} Creating PDF...`;
   console.log(logMessage);
   io.emit("newLog", logMessage);
 
@@ -128,7 +198,9 @@ async function createPdf(titles, email) {
   const pdfBytes = await pdfDoc.save();
   const pdfPath = "news_titles.pdf";
   fs.writeFileSync(pdfPath, pdfBytes);
-  const logMessage2 = `${moment().format("YYYY-MM-DD HH:mm:ss")} PDF created successfully!`;
+  const logMessage2 = `${moment().format(
+    "YYYY-MM-DD HH:mm:ss"
+  )} PDF created successfully!`;
   console.log(logMessage2);
   io.emit("newLog", logMessage2);
 
@@ -159,7 +231,9 @@ async function sendEmailWithPDF(email, pdfPath) {
     };
 
     const info = await transporter.sendMail(mailOptions);
-    const logMessage3 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Email sent: ${info.messageId}`;
+    const logMessage3 = `${moment().format(
+      "YYYY-MM-DD HH:mm:ss"
+    )} Email sent: ${info.messageId}`;
     console.log(logMessage3);
     io.emit("newLog", logMessage3);
   } catch (error) {
@@ -177,14 +251,18 @@ app.get("/scraping", async (req, res) => {
       return;
     }
 
-    const logMessage = `${moment().format("YYYY-MM-DD HH:mm:ss")} Scraping request received for keyword: ${keyword}`;
+    const logMessage = `${moment().format(
+      "YYYY-MM-DD HH:mm:ss"
+    )} Scraping request received for keyword: ${keyword}`;
     console.log(logMessage);
     io.emit("newLog", logMessage);
 
     const job = { keyword, email };
     queue.push(job);
 
-    const logMessage2 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Job enqueued. Queue length: ${queue.length}`;
+    const logMessage2 = `${moment().format(
+      "YYYY-MM-DD HH:mm:ss"
+    )} Job enqueued. Queue length: ${queue.length}`;
     console.log(logMessage2);
     io.emit("newLog", logMessage2);
 
@@ -201,7 +279,9 @@ app.get("/scraping", async (req, res) => {
 
 function processQueue() {
   if (isProcessingQueue || queue.length === 0) {
-    const logMessage = `${moment().format("YYYY-MM-DD HH:mm:ss")} Queue is empty or already being processed`;
+    const logMessage = `${moment().format(
+      "YYYY-MM-DD HH:mm:ss"
+    )} Queue is empty or already being processed`;
     console.log(logMessage);
     io.emit("newLog", logMessage);
     return;
@@ -213,13 +293,17 @@ function processQueue() {
   const { keyword, email } = job;
   const startTime = new Date().getTime();
 
-  const logMessage = `${moment().format("YYYY-MM-DD HH:mm:ss")} Processing job for keyword: ${keyword}`;
+  const logMessage = `${moment().format(
+    "YYYY-MM-DD HH:mm:ss"
+  )} Processing job for keyword: ${keyword}`;
   console.log(logMessage);
   io.emit("newLog", logMessage);
 
   scrapeProsperidadSocial(keyword)
     .then((titles) => {
-      const logMessage2 = `${moment().format("YYYY-MM-DD HH:mm:ss")} Scraping completed. Found ${titles.length} titles.`;
+      const logMessage2 = `${moment().format(
+        "YYYY-MM-DD HH:mm:ss"
+      )} Scraping completed. Found ${titles.length} titles.`;
       console.log(logMessage2);
       io.emit("newLog", logMessage2);
 
@@ -228,7 +312,9 @@ function processQueue() {
     .then(() => {
       const endTime = new Date().getTime();
       const duration = endTime - startTime;
-      const logMessage3 = `${moment().format("YYYY-MM-DD HH:mm:ss")} PDF created and email sent successfully! Job completed in ${duration} ms`;
+      const logMessage3 = `${moment().format(
+        "YYYY-MM-DD HH:mm:ss"
+      )} PDF created and email sent successfully! Job completed in ${duration} ms`;
       console.log(logMessage3);
       io.emit("newLog", logMessage3);
 
@@ -242,23 +328,29 @@ function processQueue() {
     });
 }
 
-processQueue(); 
+processQueue();
 
 app.get("/queue-length", (req, res) => {
   const queueLength = queue.length;
-  const logMessage = `${moment().format("YYYY-MM-DD HH:mm:ss")} Queue length: ${queueLength}`;
+  const logMessage = `${moment().format(
+    "YYYY-MM-DD HH:mm:ss"
+  )} Queue length: ${queueLength}`;
   console.log(logMessage);
   io.emit("newLog", logMessage);
   res.send(`Queue length: ${queueLength}`);
 });
 
 io.on("connection", (socket) => {
-  const logMessage = `${moment().format("YYYY-MM-DD HH:mm:ss")} A user connected`;
+  const logMessage = `${moment().format(
+    "YYYY-MM-DD HH:mm:ss"
+  )} A user connected`;
   console.log(logMessage);
   io.emit("newLog", logMessage);
 
   socket.on("disconnect", () => {
-    const logMessage2 = `${moment().format("YYYY-MM-DD HH:mm:ss")} User disconnected`;
+    const logMessage2 = `${moment().format(
+      "YYYY-MM-DD HH:mm:ss"
+    )} User disconnected`;
     console.log(logMessage2);
     io.emit("newLog", logMessage2);
   });
